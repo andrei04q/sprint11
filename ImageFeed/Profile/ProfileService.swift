@@ -10,54 +10,43 @@ final class ProfileService {
 
     private(set) var profile: Profile?
 
-    // MARK: - Public
-
     func fetchProfile(_ token: String,
                       completion: @escaping (Result<Profile, Error>) -> Void) {
 
         task?.cancel()
 
         guard let request = makeProfileRequest(token: token) else {
-            print("[ProfileService] ❌ invalid request")
+            print("[ProfileService] failure: invalid request")
             completion(.failure(URLError(.badURL)))
             return
         }
 
-        print("[ProfileService] 📡 fetching profile...")
-
         let task = urlSession.dataTask(with: request) { [weak self] data, _, error in
 
-            if let error {
-                print("[ProfileService] ❌ network error: \(error)")
-                DispatchQueue.main.async {
+            DispatchQueue.main.async {
+                guard let self else { return }
+
+                if let error {
+                    print("[ProfileService] failure: \(error)")
                     completion(.failure(error))
+                    return
                 }
-                return
-            }
 
-            guard let data else {
-                print("[ProfileService] ❌ empty response")
-                DispatchQueue.main.async {
+                guard let data else {
+                    print("[ProfileService] failure: empty response")
                     completion(.failure(URLError(.badServerResponse)))
-                }
-                return
-            }
-
-            do {
-                let profile = try self?.createProfile(from: data)
-
-                guard let profile else {
-                    throw URLError(.badServerResponse)
+                    return
                 }
 
-                DispatchQueue.main.async {
-                    self?.profile = profile
+                do {
+                    let profile = try self.createProfile(from: data)
+                    self.profile = profile
+
+                    print("[ProfileService] success")
                     completion(.success(profile))
-                }
 
-            } catch {
-                print("[ProfileService] ❌ decode error: \(error)")
-                DispatchQueue.main.async {
+                } catch {
+                    print("[ProfileService] failure: \(error)")
                     completion(.failure(error))
                 }
             }
@@ -67,20 +56,14 @@ final class ProfileService {
         task.resume()
     }
 
-    // MARK: - Clean (ВАЖНО ДЛЯ LOGOUT)
-
     func cleanProfile() {
         profile = nil
         task?.cancel()
         task = nil
     }
 
-    // MARK: - Private
-
     private func makeProfileRequest(token: String) -> URLRequest? {
-        guard let url = URL(string: Constants.unsplashProfileURLString) else {
-            return nil
-        }
+        guard let url = URL(string: Constants.unsplashProfileURLString) else { return nil }
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -95,23 +78,12 @@ final class ProfileService {
 
         let result = try decoder.decode(ProfileResult.self, from: data)
 
-        let name: String = {
-            if let name = result.name, !name.isEmpty {
-                return name
-            }
-
-            let full = [result.firstName, result.lastName]
-                .compactMap { $0 }
-                .joined(separator: " ")
-
-            return full.isEmpty ? "Имя не указано" : full
-        }()
-
+        let name = result.name ?? ""
         let username = result.username ?? ""
 
         return Profile(
             username: username,
-            name: name,
+            name: name.isEmpty ? "Name not specified" : name,
             loginName: username.isEmpty ? "@unknown" : "@\(username)",
             bio: result.bio
         )

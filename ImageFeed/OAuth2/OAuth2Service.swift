@@ -6,13 +6,14 @@ enum AuthServiceError: Error {
 }
 
 final class OAuth2Service {
+
     static let shared = OAuth2Service()
 
     private let dataStorage = OAuth2TokenStorage.shared
     private let urlSession = URLSession.shared
 
     private var task: URLSessionTask?
-    private var isFetching = false
+    private var lastCode: String?
 
     private(set) var authToken: String? {
         get { dataStorage.token }
@@ -23,31 +24,42 @@ final class OAuth2Service {
 
     func fetchOAuthToken(_ code: String,
                          completion: @escaping (Result<String, Error>) -> Void) {
+
         assert(Thread.isMainThread)
 
+        if lastCode == code, task != nil {
+            print("[OAuth2Service] failure: request already in progress for same code")
+            return
+        }
+
         task?.cancel()
-        task = nil
+        lastCode = code
 
         guard let request = makeOAuthTokenRequest(code: code) else {
-            print("[OAuth2Service] ❌ Invalid request")
+            lastCode = nil
+            print("[OAuth2Service] failure: invalid request")
             completion(.failure(AuthServiceError.invalidRequest))
             return
         }
 
-        print("[OAuth2Service] 📡 Fetch token started")
-
         let task = urlSession.dataTask(with: request) { [weak self] data, _, error in
+
             DispatchQueue.main.async {
                 guard let self else { return }
 
+                defer {
+                    self.task = nil
+                    self.lastCode = nil
+                }
+
                 if let error {
-                    print("[OAuth2Service] ❌ Network error: \(error)")
+                    print("[OAuth2Service] failure: \(error)")
                     completion(.failure(error))
                     return
                 }
 
                 guard let data else {
-                    print("[OAuth2Service] ❌ Empty response")
+                    print("[OAuth2Service] failure: empty response")
                     completion(.failure(AuthServiceError.invalidRequest))
                     return
                 }
@@ -59,17 +71,17 @@ final class OAuth2Service {
                     let body = try decoder.decode(OAuthTokenResponseBody.self, from: data)
 
                     guard let token = body.accessToken else {
-                        print("[OAuth2Service] ❌ No access token in response")
+                        print("[OAuth2Service] failure: no access token")
                         completion(.failure(AuthServiceError.noAccessToken))
                         return
                     }
 
                     self.authToken = token
-                    print("[OAuth2Service] ✅ Token saved")
+                    print("[OAuth2Service] success")
                     completion(.success(token))
 
                 } catch {
-                    print("[OAuth2Service] ❌ Decode error: \(error)")
+                    print("[OAuth2Service] failure: \(error)")
                     completion(.failure(error))
                 }
             }
@@ -80,9 +92,7 @@ final class OAuth2Service {
     }
 
     private func makeOAuthTokenRequest(code: String) -> URLRequest? {
-        guard let url = URL(string: Constants.unsplashTokenURLString) else {
-            return nil
-        }
+        guard let url = URL(string: Constants.unsplashTokenURLString) else { return nil }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -95,11 +105,11 @@ final class OAuth2Service {
             "grant_type": "authorization_code"
         ]
 
-        let body = params
+        request.httpBody = params
             .map { "\($0.key)=\($0.value)" }
             .joined(separator: "&")
+            .data(using: .utf8)
 
-        request.httpBody = body.data(using: .utf8)
         request.setValue("application/x-www-form-urlencoded",
                          forHTTPHeaderField: "Content-Type")
 
