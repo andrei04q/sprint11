@@ -1,93 +1,91 @@
 import Foundation
 
 final class ProfileService {
+
     static let shared = ProfileService()
-    private init() { }
+    private init() {}
 
     private var task: URLSessionTask?
     private let urlSession = URLSession.shared
+
     private(set) var profile: Profile?
 
-    func fetchProfile(_ token: String, completion: @escaping (Result<Profile, Error>) -> Void) {
+    func fetchProfile(_ token: String,
+                      completion: @escaping (Result<Profile, Error>) -> Void) {
+
         task?.cancel()
 
         guard let request = makeProfileRequest(token: token) else {
+            print("[ProfileService] failure: invalid request")
             completion(.failure(URLError(.badURL)))
             return
         }
 
-        let task = urlSession.dataTask(with: request) { [weak self] data, response, error in
-            if let error = error {
-                completion(.failure(error))
-                return
-            }
+        let task = urlSession.dataTask(with: request) { [weak self] data, _, error in
 
-            guard let data = data else {
-                completion(.failure(URLError(.badServerResponse)))
-                return
-            }
+            DispatchQueue.main.async {
+                guard let self else { return }
 
-            if let jsonString = String(data: data, encoding: .utf8) {
-                print("Полученный JSON профиля: \(jsonString)")
-            }
-
-            do {
-                let profile = try self?.createProfile(from: data)
-                if let profile = profile {
-                    self?.profile = profile
-                    DispatchQueue.main.async {
-                        completion(.success(profile))
-                    }
-                } else {
-                    throw URLError(.badServerResponse)
+                if let error {
+                    print("[ProfileService] failure: \(error)")
+                    completion(.failure(error))
+                    return
                 }
-            } catch {
-                print("[fetchProfile]: Ошибка декодирования: \(error)")
-                DispatchQueue.main.async {
+
+                guard let data else {
+                    print("[ProfileService] failure: empty response")
+                    completion(.failure(URLError(.badServerResponse)))
+                    return
+                }
+
+                do {
+                    let profile = try self.createProfile(from: data)
+                    self.profile = profile
+
+                    print("[ProfileService] success")
+                    completion(.success(profile))
+
+                } catch {
+                    print("[ProfileService] failure: \(error)")
                     completion(.failure(error))
                 }
             }
         }
+
         self.task = task
         task.resume()
+    }
+
+    func cleanProfile() {
+        profile = nil
+        task?.cancel()
+        task = nil
+    }
+
+    private func makeProfileRequest(token: String) -> URLRequest? {
+        guard let url = URL(string: Constants.unsplashProfileURLString) else { return nil }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        return request
     }
 
     private func createProfile(from data: Data) throws -> Profile {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
+
         let result = try decoder.decode(ProfileResult.self, from: data)
 
-        let nameToShow: String
-        if let name = result.name, !name.isEmpty {
-            nameToShow = name
-        } else {
-            let fullName = [result.firstName, result.lastName]
-                .compactMap { $0 }
-                .joined(separator: " ")
-            nameToShow = fullName.isEmpty ? "Имя не указано" : fullName
-        }
-
+        let name = result.name ?? ""
         let username = result.username ?? ""
+
         return Profile(
             username: username,
-            name: nameToShow,
-            loginName: username.isEmpty ? "@неизвестный_пользователь" : "@\(username)",
+            name: name.isEmpty ? "Name not specified" : name,
+            loginName: username.isEmpty ? "@unknown" : "@\(username)",
             bio: result.bio
         )
-    }
-
-    private func makeProfileRequest(token: String) -> URLRequest? {
-        guard let url = URL(string: Constants.unsplashProfileURLString) else {
-            print("Failed to create profile URL")
-            return nil
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        return request
-    }
-
-    func cleanProfile() {
-        profile = nil
     }
 }

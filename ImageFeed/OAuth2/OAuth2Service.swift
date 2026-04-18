@@ -6,6 +6,7 @@ enum AuthServiceError: Error {
 }
 
 final class OAuth2Service {
+
     static let shared = OAuth2Service()
 
     private let dataStorage = OAuth2TokenStorage.shared
@@ -19,75 +20,83 @@ final class OAuth2Service {
         set { dataStorage.token = newValue }
     }
 
-    private init() { }
+    private init() {}
 
-    func fetchOAuthToken(_ code: String, completion: @escaping (Result<String, Error>) -> Void) {
+    func fetchOAuthToken(_ code: String,
+                         completion: @escaping (Result<String, Error>) -> Void) {
+
         assert(Thread.isMainThread)
-        guard lastCode != code else {
-            completion(.failure(AuthServiceError.invalidRequest))
+
+        if lastCode == code, task != nil {
+            print("[OAuth2Service] failure: request already in progress for same code")
             return
         }
 
         task?.cancel()
         lastCode = code
+
         guard let request = makeOAuthTokenRequest(code: code) else {
+            lastCode = nil
+            print("[OAuth2Service] failure: invalid request")
             completion(.failure(AuthServiceError.invalidRequest))
             return
         }
 
         let task = urlSession.dataTask(with: request) { [weak self] data, _, error in
+
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self else { return }
+
+                defer {
+                    self.task = nil
+                    self.lastCode = nil
+                }
+
                 if let error {
+                    print("[OAuth2Service] failure: \(error)")
                     completion(.failure(error))
-                    self.resetTask()
                     return
                 }
 
-                guard let data = data else {
+                guard let data else {
+                    print("[OAuth2Service] failure: empty response")
                     completion(.failure(AuthServiceError.invalidRequest))
-                    self.resetTask()
                     return
                 }
 
                 do {
                     let decoder = JSONDecoder()
                     decoder.keyDecodingStrategy = .convertFromSnakeCase
+
                     let body = try decoder.decode(OAuthTokenResponseBody.self, from: data)
 
-                    guard let accessToken = body.accessToken else {
+                    guard let token = body.accessToken else {
+                        print("[OAuth2Service] failure: no access token")
                         completion(.failure(AuthServiceError.noAccessToken))
-                        self.resetTask()
                         return
                     }
 
-                    self.authToken = accessToken
-                    completion(.success(accessToken))
-                    self.resetTask()
+                    self.authToken = token
+                    print("[OAuth2Service] success")
+                    completion(.success(token))
+
                 } catch {
+                    print("[OAuth2Service] failure: \(error)")
                     completion(.failure(error))
-                    self.resetTask()
                 }
             }
         }
+
         self.task = task
         task.resume()
     }
 
-    private func resetTask() {
-        task = nil
-        lastCode = nil
-    }
-  
     private func makeOAuthTokenRequest(code: String) -> URLRequest? {
-        guard let url = URL(string: Constants.unsplashTokenURLString) else {
-            print("Failed to create URL")
-            return nil
-        }
-        
+        guard let url = URL(string: Constants.unsplashTokenURLString) else { return nil }
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        
+
         let params: [String: String] = [
             "client_id": Constants.accessKey,
             "client_secret": Constants.secretKey,
@@ -96,9 +105,13 @@ final class OAuth2Service {
             "grant_type": "authorization_code"
         ]
 
-        let bodyString = params.map { "\($0.key)=\($0.value)" }.joined(separator: "&")
-        request.httpBody = bodyString.data(using: .utf8)
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = params
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: "&")
+            .data(using: .utf8)
+
+        request.setValue("application/x-www-form-urlencoded",
+                         forHTTPHeaderField: "Content-Type")
 
         return request
     }
